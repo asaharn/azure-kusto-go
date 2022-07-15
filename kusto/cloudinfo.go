@@ -68,34 +68,39 @@ func RetrieveCloudInfoMetadata(kustoUrl string) (*cloudInfo, error) {
 			// TODO how do we log
 			errorToThrow = err
 		}
-
 		// metadata retrieval was successful
 		if metadataResponse.StatusCode == 200 {
 			// close once read
 			defer metadataResponse.Body.Close()
 			jsonBytes, resError := ioutil.ReadAll(metadataResponse.Body)
 			if resError != nil {
-
-			}
-			json.Unmarshal(jsonBytes, &metadataMap)
-			// there is both dSTS key and the AzureAD key information.
-			nestedMap, _ := metadataMap[azureADKey]
-
-			if len(nestedMap) == 0 {
-				// The call was a success , but no response was returned
-				// TODO warn logging here
+				// TODO how do we log
+				errorToThrow = err
+			} else if len(jsonBytes) == 0 {
+				// Call succeeded but no body
 				cloudInfoCache[kustoUrl] = defaultCloudInfo
+			} else {
+				// there is a body , then parse it
+				json.Unmarshal(jsonBytes, &metadataMap)
+				// there is both dSTS key and the AzureAD key information.
+				nestedMap := metadataMap[azureADKey]
+				if len(nestedMap) == 0 {
+					// The call was a success , but no response was returned
+					// TODO warn logging here
+					cloudInfoCache[kustoUrl] = defaultCloudInfo
+				}
+				cloudInfoRetrieved := &cloudInfo{
+					loginEndpoint:          nestedMap["LoginEndpoint"].(string),
+					loginMfaRequired:       nestedMap["LoginMfaRequired"].(bool),
+					kustoClientAppId:       nestedMap["KustoClientAppId"].(string),
+					kustoClientRedirectUri: nestedMap["KustoClientRedirectUri"].(string),
+					kustoServiceResourceId: nestedMap["KustoServiceResourceId"].(string),
+					firstPartyAuthorityUrl: nestedMap["FirstPartyAuthorityUrl"].(string),
+				}
+				// Add this into the cache
+				cloudInfoCache[kustoUrl] = cloudInfoRetrieved
 			}
-			cloudInfoRetrieved := &cloudInfo{
-				loginEndpoint:          nestedMap["LoginEndpoint"].(string),
-				loginMfaRequired:       nestedMap["LoginMfaRequired"].(bool),
-				kustoClientAppId:       nestedMap["KustoClientAppId"].(string),
-				kustoClientRedirectUri: nestedMap["KustoClientRedirectUri"].(string),
-				kustoServiceResourceId: nestedMap["KustoServiceResourceId"].(string),
-				firstPartyAuthorityUrl: nestedMap["FirstPartyAuthorityUrl"].(string),
-			}
-			// Add this into the cache
-			cloudInfoCache[kustoUrl] = cloudInfoRetrieved
+
 		} else if metadataResponse.StatusCode == 404 {
 			// the URL is not reachable , fallback to default
 			// For now as long not all proxies implement the metadata endpoint, if no endpoint exists return public cloud data
@@ -103,9 +108,8 @@ func RetrieveCloudInfoMetadata(kustoUrl string) (*cloudInfo, error) {
 			cloudInfoCache[kustoUrl] = defaultCloudInfo
 		} else {
 			// Some other HTTP error code here
-			err = fmt.Errorf("retrieved error code %d when querying endpoint %s", metadataResponse.StatusCode, fullMetadataEndpoint)
+			errorToThrow = fmt.Errorf("retrieved error code %d when querying endpoint %s", metadataResponse.StatusCode, fullMetadataEndpoint)
 		}
-
 	})
 	if errorToThrow != nil {
 		return nil, errorToThrow
