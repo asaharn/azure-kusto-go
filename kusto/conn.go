@@ -39,6 +39,7 @@ var bufferPool = sync.Pool{
 type conn struct {
 	endpoint                       string
 	auth                           autorest.Authorizer
+	tokenProvider                  TokenProvider
 	endMgmt, endQuery, streamQuery *url.URL
 	client                         *http.Client
 }
@@ -55,11 +56,16 @@ func newConn(endpoint string, auth Authorization, client *http.Client) (*conn, e
 	}
 
 	c := &conn{
-		auth:        auth.Authorizer,
 		endMgmt:     &url.URL{Scheme: "https", Host: u.Host, Path: "/v1/rest/mgmt"},
 		endQuery:    &url.URL{Scheme: "https", Host: u.Host, Path: "/v2/rest/query"},
 		streamQuery: &url.URL{Scheme: "https", Host: u.Host, Path: "/v1/rest/ingest/"},
 		client:      client,
+	}
+	if auth.tokenProvider != (TokenProvider{}) {
+		c.tokenProvider = auth.tokenProvider
+
+	} else {
+		c.auth = auth.Authorizer
 	}
 
 	return c, nil
@@ -159,6 +165,10 @@ func (c *conn) execute(ctx context.Context, execType int, db string, query Stmt,
 		return execResp{}, errors.ES(op, errors.KInternal, "internal error: did not understand the type of execType: %d", execType)
 	}
 
+	if c.tokenProvider != (TokenProvider{}) {
+		token := c.tokenProvider.getToken()
+		header.Add("Authorization", fmt.Sprintf("Bearer %s", token.Token))
+	}
 	req := &http.Request{
 		Method: http.MethodPost,
 		URL:    endpoint,
@@ -167,12 +177,14 @@ func (c *conn) execute(ctx context.Context, execType int, db string, query Stmt,
 	}
 
 	var err error
-	prep := c.auth.WithAuthorization()
-	req, err = prep(autorest.CreatePreparer()).Prepare(req)
-	if err != nil {
-		return execResp{}, errors.E(op, errors.KInternal, err)
-	}
+	if c.auth != nil {
 
+		prep := c.auth.WithAuthorization()
+		req, err = prep(autorest.CreatePreparer()).Prepare(req)
+		if err != nil {
+			return execResp{}, errors.E(op, errors.KInternal, err)
+		}
+	}
 	resp, err := c.client.Do(req.WithContext(ctx))
 	if err != nil {
 		// TODO(jdoak): We need a http error unwrap function that pulls out an *errors.Error.
